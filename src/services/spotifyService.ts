@@ -1,7 +1,6 @@
 import querystring from "querystring";
 import { Buffer } from "buffer";
 import axios from "axios";
-import { parse } from "url";
 import { log } from "console";
 
 const client_id = process.env.SPOTIFY_CLIENT_ID;

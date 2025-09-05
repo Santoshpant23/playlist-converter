@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { google } from "googleapis";
 import env from "dotenv";
 import metaData from "./getMetaData";
 import { log } from "console";

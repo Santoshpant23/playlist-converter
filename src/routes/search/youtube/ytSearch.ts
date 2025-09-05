@@ -1,10 +1,8 @@
 import { Router } from "express";
 import { mapSpotifyToYouTube } from "./searchMetaData";
 import { makeYoutubePlaylist } from "./makePlaylist";
-// import { getUserTokens } from "../../../providers/youtubeToken";
 import { OAuth2Client } from "google-auth-library";
 import { log } from "console";
-import { language } from "googleapis/build/src/apis/language";
 
 const ytSearch = Router();
 

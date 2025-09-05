@@ -1,6 +1,6 @@
 // makePlaylist.ts
-import { google } from "googleapis";
 import { OAuth2Client } from "google-auth-library";
+import axios from "axios";
 
 // Assume you already have OAuth2 client setup
 // import { getUserTokens } from "../../../providers/youtubeToken"; // You should export it from your token file
@@ -48,13 +48,14 @@ export async function makeYoutubePlaylist(
       process.env.CALLBACK_URL
     );
     oauth2Client.setCredentials(tokens);
-    const youtube = google.youtube({ version: "v3", auth: oauth2Client });
-    // console.log(youtube);
+
+    // Get access token for the requests
+    const { token } = await oauth2Client.getAccessToken();
 
     // Step 1: Create the playlist
-    const createResponse = await youtube.playlists.insert({
-      part: ["snippet", "status"],
-      requestBody: {
+    const createResponse = await axios.post(
+      "https://www.googleapis.com/youtube/v3/playlists",
+      {
         snippet: {
           title: playlistName,
           description: "Songs converted from spotify",
@@ -63,8 +64,17 @@ export async function makeYoutubePlaylist(
           privacyStatus: privacy,
         },
       },
-    });
-    console.log(createResponse);
+      {
+        params: {
+          part: "snippet,status",
+        },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    console.log(createResponse.data);
 
     const playlistId = createResponse.data.id;
     if (!playlistId) throw new Error("Playlist creation failed");
@@ -80,9 +90,9 @@ export async function makeYoutubePlaylist(
 
       if (!videoId) continue;
 
-      await youtube.playlistItems.insert({
-        part: ["snippet"],
-        requestBody: {
+      await axios.post(
+        "https://www.googleapis.com/youtube/v3/playlistItems",
+        {
           snippet: {
             playlistId,
             resourceId: {
@@ -91,7 +101,16 @@ export async function makeYoutubePlaylist(
             },
           },
         },
-      });
+        {
+          params: {
+            part: "snippet",
+          },
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
     }
 
     const playlistUrl = `https://www.youtube.com/playlist?list=${playlistId}`;

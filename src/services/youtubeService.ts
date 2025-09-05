@@ -1,12 +1,12 @@
-import { google } from "googleapis";
 import axios from "axios";
+import { OAuth2Client } from "google-auth-library";
 import env from "dotenv";
 
 env.config();
 
 const API_KEY = process.env.YOUTUBE_API_KEY;
 
-const oauth2Client = new google.auth.OAuth2(
+const oauth2Client = new OAuth2Client(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
   process.env.CALLBACK_URL
@@ -119,19 +119,30 @@ export async function fetchPlaylistWithOAuth(playlistId: string, tokens: any) {
       return [];
     }
     // Build OAuth client from tokens
-    const oauth2 = new google.auth.OAuth2(
+    const oauth2 = new OAuth2Client(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,
       process.env.CALLBACK_URL
     );
     oauth2.setCredentials(tokens);
-    const youtube = google.youtube({ version: "v3", auth: oauth2 });
 
-    const response = await youtube.playlistItems.list({
-      part: ["snippet"],
-      playlistId,
-      maxResults: 50,
-    });
+    // Get access token for the request
+    const { token } = await oauth2.getAccessToken();
+
+    const response = await axios.get(
+      "https://www.googleapis.com/youtube/v3/playlistItems",
+      {
+        params: {
+          part: "snippet",
+          playlistId,
+          maxResults: 50,
+        },
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
     console.log(
       "I am done calling right endpoint inside this function, now returning what I got"
     );

@@ -165,8 +165,19 @@ function hasBadKeywords(title: string, originalTitle: string): boolean {
   );
 }
 
-// Simple cache to avoid repeated searches
+// Simple cache to avoid repeated searches with size limit
+const MAX_CACHE_SIZE = 1000;
 const searchCache = new Map<string, YouTubeMatch | null>();
+
+// Clear cache when it gets too large to prevent memory leaks
+function manageCacheSize() {
+  if (searchCache.size > MAX_CACHE_SIZE) {
+    const firstKey = searchCache.keys().next().value;
+    if (firstKey) {
+      searchCache.delete(firstKey);
+    }
+  }
+}
 
 // Build intelligent search queries for YouTube
 function buildYouTubeQueries(track: TrackMetadata): string[] {
@@ -288,6 +299,9 @@ export async function mapSpotifyToYouTube(
           /[^\w]/g,
           ""
         );
+
+      // Manage cache size to prevent memory issues
+      manageCacheSize();
 
       if (searchCache.has(cacheKey)) {
         console.log("✨ Using cached result");
