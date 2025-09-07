@@ -1,6 +1,10 @@
 // makePlaylist.ts
 import { OAuth2Client } from "google-auth-library";
 import axios from "axios";
+import {
+  getValidYouTubeToken,
+  YouTubeTokens,
+} from "../../../services/youtubeService";
 
 // Assume you already have OAuth2 client setup
 // import { getUserTokens } from "../../../providers/youtubeToken"; // You should export it from your token file
@@ -26,7 +30,7 @@ function extractVideoIdFromUrl(url: string): string | null {
 }
 
 export async function makeYoutubePlaylist(
-  tokens: any,
+  tokens: YouTubeTokens,
   songs: SongMatch[],
   playlistName: string,
   privacy: "public" | "private" | "unlisted" = "public"
@@ -36,29 +40,46 @@ export async function makeYoutubePlaylist(
   message?: string;
   found?: number;
   total?: number;
+  updated_tokens?: YouTubeTokens;
 }> {
   try {
-    console.log(
-      "Inside the function that converts from spotify to youtube below yahhhhhhh"
-    );
-    // Build OAuth2 client from stored session tokens
-    const oauth2Client = new OAuth2Client(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.CALLBACK_URL
-    );
-    oauth2Client.setCredentials(tokens);
+    console.log("🎵 Starting YouTube playlist creation...");
 
-    // Get access token for the requests
-    const { token } = await oauth2Client.getAccessToken();
+    // Get valid token (refresh if needed)
+    const tokenResult = await getValidYouTubeToken(tokens);
+
+    console.log("✅ YouTube token validated");
+
+    // Test the token with a simple API call first
+    try {
+      console.log("🧪 Testing YouTube token with channels API...");
+      await axios.get("https://www.googleapis.com/youtube/v3/channels", {
+        params: {
+          part: "snippet",
+          mine: true,
+        },
+        headers: {
+          Authorization: `Bearer ${tokenResult.access_token}`,
+        },
+      });
+      console.log("✅ YouTube token test successful");
+    } catch (testError: any) {
+      console.error("❌ YouTube token test failed:", testError.response?.data);
+      throw new Error(
+        `YouTube token invalid: ${
+          testError.response?.data?.error?.message || testError.message
+        }`
+      );
+    }
 
     // Step 1: Create the playlist
+    console.log("📝 Creating YouTube playlist...");
     const createResponse = await axios.post(
       "https://www.googleapis.com/youtube/v3/playlists",
       {
         snippet: {
           title: playlistName,
-          description: "Songs converted from spotify",
+          description: "Songs converted from Spotify",
         },
         status: {
           privacyStatus: privacy,
@@ -69,64 +90,79 @@ export async function makeYoutubePlaylist(
           part: "snippet,status",
         },
         headers: {
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${tokenResult.access_token}`,
           "Content-Type": "application/json",
         },
       }
     );
-    console.log(createResponse.data);
+
+    console.log("✅ YouTube playlist created");
 
     const playlistId = createResponse.data.id;
     if (!playlistId) throw new Error("Playlist creation failed");
-    console.log(playlistId);
 
-    // Step 2: Add each video to the playlist
-    for (const song of songs) {
-      if (!song.found) continue;
+    // Step 2: Add each video to the playlist (with reduced logging)
+    const foundSongs = songs.filter((song) => song.found);
+    console.log(`📹 Adding ${foundSongs.length} videos to playlist...`);
 
-      const videoId =
-        song.youtubeMatch.videoId ||
-        extractVideoIdFromUrl(song.youtubeMatch.url);
+    let addedCount = 0;
+    for (const song of foundSongs) {
+      try {
+        const videoId =
+          song.youtubeMatch.videoId ||
+          extractVideoIdFromUrl(song.youtubeMatch.url);
 
-      if (!videoId) continue;
+        if (!videoId) continue;
 
-      await axios.post(
-        "https://www.googleapis.com/youtube/v3/playlistItems",
-        {
-          snippet: {
-            playlistId,
-            resourceId: {
-              kind: "youtube#video",
-              videoId: videoId,
+        await axios.post(
+          "https://www.googleapis.com/youtube/v3/playlistItems",
+          {
+            snippet: {
+              playlistId,
+              resourceId: {
+                kind: "youtube#video",
+                videoId: videoId,
+              },
             },
           },
-        },
-        {
-          params: {
-            part: "snippet",
-          },
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
+          {
+            params: {
+              part: "snippet",
+            },
+            headers: {
+              Authorization: `Bearer ${tokenResult.access_token}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+        addedCount++;
+      } catch (error) {
+        console.warn(`⚠️ Failed to add video ${song.youtubeMatch.title}`);
+      }
     }
+
+    console.log(`✅ Added ${addedCount} videos to YouTube playlist`);
 
     const playlistUrl = `https://www.youtube.com/playlist?list=${playlistId}`;
 
-    const foundSongs = songs.filter((song) => song.found);
     return {
       success: true,
       playlistUrl,
-      found: foundSongs.length,
+      found: addedCount,
       total: songs.length,
+      updated_tokens: tokenResult.updated_tokens,
     };
   } catch (error: any) {
-    console.error("Failed to create playlist:", error);
+    console.error(
+      "❌ Failed to create YouTube playlist:",
+      error.response?.data || error.message
+    );
     return {
       success: false,
-      message: error.message || "Unknown error",
+      message:
+        error.response?.data?.error?.message ||
+        error.message ||
+        "Unknown error",
     };
   }
 }

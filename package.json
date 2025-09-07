@@ -5,7 +5,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "npx tsx watch src/index.ts",
-    "build": "npx esbuild src/index.ts --bundle --platform=node --outfile=dist/index.js --external:google-auth-library --external:axios --external:cors --external:express --external:express-session --external:dotenv --external:yt-search --minify",
+    "build": "npx esbuild src/index.ts --bundle --platform=node --outfile=dist/index.js --external:google-auth-library --external:axios --external:cors --external:express --external:express-session --external:dotenv --external:yt-search --external:mock-aws-s3 --external:aws-sdk --external:nock --minify",
     "build:dev": "npx tsc",
     "clean": "rm -rf dist .tsbuildinfo",
     "start": "node dist/index.js"
@@ -16,17 +16,23 @@
   "description": "",
   "dependencies": {
     "axios": "^1.10.0",
+    "bcrypt": "^5.1.1",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^5.1.0",
-    "express-session": "^1.18.1",
     "google-auth-library": "^10.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "lucide-react": "^0.542.0",
+    "mongoose": "^8.18.0",
     "yt-search": "^2.13.1"
   },
   "devDependencies": {
+    "@types/bcrypt": "^5.0.2",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/express-session": "^1.18.2",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/mongoose": "^5.11.97",
     "@types/yt-search": "^2.10.3",
     "esbuild": "^0.19.0",
     "tsx": "^4.19.2",

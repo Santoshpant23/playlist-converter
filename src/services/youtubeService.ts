@@ -23,7 +23,85 @@ const scopes = [
 export interface YouTubeTokens {
   access_token: string;
   refresh_token?: string;
+  expires_at?: number;
   username?: string;
+}
+
+// Utility: Refresh YouTube access token using refresh token
+export async function refreshYouTubeToken(refreshToken: string): Promise<{
+  access_token: string;
+  expires_in: number;
+  refresh_token?: string;
+}> {
+  if (!refreshToken) {
+    throw new Error("No refresh token available");
+  }
+
+  console.log("🔄 Attempting to refresh YouTube token...");
+
+  try {
+    const oauth2 = new OAuth2Client(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.CALLBACK_URL
+    );
+
+    oauth2.setCredentials({ refresh_token: refreshToken });
+    const { credentials } = await oauth2.refreshAccessToken();
+
+    if (!credentials.access_token) {
+      throw new Error("No access token received from Google");
+    }
+
+    console.log("✅ YouTube token refresh successful");
+
+    return {
+      access_token: credentials.access_token,
+      expires_in: 3600, // YouTube tokens typically expire in 1 hour
+      refresh_token: credentials.refresh_token || refreshToken,
+    };
+  } catch (error: any) {
+    console.error("❌ YouTube token refresh failed:", error.message);
+    throw new Error(`Failed to refresh YouTube token: ${error.message}`);
+  }
+} // Utility: Get valid YouTube access token or refresh it
+export async function getValidYouTubeToken(
+  tokens: YouTubeTokens
+): Promise<{ access_token: string; updated_tokens?: YouTubeTokens }> {
+  if (!tokens || !tokens.access_token) {
+    throw new Error("YouTube not authenticated");
+  }
+
+  // Check if token is expired or about to expire (5 minutes buffer)
+  const now = Date.now();
+  const expiryTime = tokens.expires_at || 0;
+  const isExpired = now > expiryTime - 300000; // 5 minute buffer
+
+  if (isExpired && tokens.refresh_token) {
+    try {
+      console.log("🔄 YouTube token expired, refreshing...");
+      const refreshed = await refreshYouTubeToken(tokens.refresh_token);
+
+      const updatedTokens: YouTubeTokens = {
+        access_token: refreshed.access_token,
+        refresh_token: refreshed.refresh_token || tokens.refresh_token,
+        expires_at: Date.now() + refreshed.expires_in * 1000,
+        username: tokens.username,
+      };
+
+      return {
+        access_token: refreshed.access_token,
+        updated_tokens: updatedTokens,
+      };
+    } catch (error) {
+      console.error("❌ Failed to refresh YouTube token:", error);
+      throw new Error(
+        "YouTube token expired and refresh failed. Please re-authenticate."
+      );
+    }
+  }
+
+  return { access_token: tokens.access_token };
 }
 
 export interface YouTubeVideo {

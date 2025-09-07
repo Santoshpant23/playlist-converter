@@ -7,86 +7,157 @@ import {
   exchangeCodeForTokens,
   getUserInfo,
 } from "../../services/youtubeService";
+import { generateRandomString } from "../../services/spotifyService";
+import { authenticateToken, AuthRequest } from "../../middleware/auth";
+import { UserTokens } from "../../models/User";
 
 env.config();
 
 const youtubeHandler = Router();
-let userTokens: any = null;
 
-// OAuth login
-youtubeHandler.get("/auth", (req, res) => {
-  const authUrl = getYouTubeAuthUrl();
-  res.redirect(authUrl);
-});
+// Get YouTube auth URL (for frontend to initiate OAuth)
+youtubeHandler.get(
+  "/auth-url",
+  authenticateToken as any,
+  (req: AuthRequest, res: any) => {
+    // Store user ID in state for callback verification
+    const state = Buffer.from(
+      JSON.stringify({ userId: req.user!.id })
+    ).toString("base64");
+    const authUrl = getYouTubeAuthUrl() + `&state=${state}`;
+    res.json({ authUrl });
+  }
+);
+
+// Direct YouTube OAuth redirect (requires user to be logged in)
+youtubeHandler.get(
+  "/auth",
+  authenticateToken as any,
+  (req: AuthRequest, res: any) => {
+    // Generate state with user ID for callback verification
+    const state = Buffer.from(
+      JSON.stringify({ userId: req.user!.id })
+    ).toString("base64");
+
+    // Redirect directly to YouTube OAuth
+    const authUrl = getYouTubeAuthUrl() + `&state=${state}`;
+    res.redirect(authUrl);
+  }
+);
 
 // OAuth callback
 youtubeHandler.get("/api/callback", async (req: any, res: any) => {
   const code = req.query.code;
-  try {
-    const tokens = await exchangeCodeForTokens(code);
-    req.session.youtubeTokens = tokens;
+  const state = req.query.state;
 
-    if (!req.session.youtubeTokens) {
+  try {
+    // Verify state parameter to get user ID
+    if (!state) {
+      return res.status(400).json({ error: "Missing state parameter" });
+    }
+
+    let userId: string;
+    try {
+      const stateData = JSON.parse(Buffer.from(state, "base64").toString());
+      userId = stateData.userId;
+    } catch {
+      return res.status(400).json({ error: "Invalid state parameter" });
+    }
+
+    const tokens = await exchangeCodeForTokens(code);
+
+    if (!tokens) {
       return res.status(401).json({ error: "Not authenticated with YouTube" });
     }
 
-    const userInfo = await getUserInfo(req.session.youtubeTokens.access_token);
+    const userInfo = await getUserInfo(tokens.access_token);
 
     // Extract just the display name (YouTube channel title)
     const channel = userInfo?.items?.[0]?.snippet?.title || "YouTube User";
-    console.log(channel);
+    console.log("YouTube channel:", channel);
 
-    (tokens as any).username = channel;
+    // Calculate expiry date (tokens typically expire in 1 hour)
+    const expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + 1);
 
-    req.session.youtubeTokens = tokens;
+    // Save or update tokens in database
+    await UserTokens.findOneAndUpdate(
+      { userId },
+      {
+        userId,
+        youtubeTokens: {
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token,
+          expires_at: expiresAt,
+          username: channel,
+        },
+      },
+      { upsert: true, new: true }
+    );
 
-    console.log("Everything good, redirecting to the endpoint");
+    console.log("YouTube tokens saved successfully, redirecting to frontend");
 
-    res.redirect(`${process.env.FRONTEND_URL || "http://localhost:5173"}/`);
+    res.redirect(
+      `${process.env.FRONTEND_URL || "https://ytify-bay.vercel.app"}/`
+    );
   } catch (error) {
     console.error("Error retrieving access token", error);
-    res.redirect(`${process.env.FRONTEND_URL || "http://localhost:5173"}/`);
+    res.redirect(
+      `${
+        process.env.FRONTEND_URL || "https://ytify-bay.vercel.app"
+      }/?error=youtube_auth_failed`
+    );
   }
 });
 
-youtubeHandler.post("/validate", (req: any, res: any) => {
-  console.log("I am inside youtube validate");
+youtubeHandler.post(
+  "/validate",
+  authenticateToken as any,
+  async (req: AuthRequest, res: any) => {
+    try {
+      console.log("Inside YouTube validate for user:", req.user!.id);
 
-  let ytToken = req.session.youtubeTokens || null;
-  console.log(ytToken, " is the token of youtube");
-  // Basic scope presence check: user must have at least youtube scope to create playlists
-  const scopeString: string | undefined = (ytToken &&
-    (ytToken.scope || ytToken.scopes)) as any;
-  const scopes: string[] = Array.isArray(scopeString)
-    ? (scopeString as any)
-    : typeof scopeString === "string"
-    ? scopeString.split(" ")
-    : [];
-  const hasYouTubeWriteScope = scopes.some((s) =>
-    [
-      "https://www.googleapis.com/auth/youtube",
-      "https://www.googleapis.com/auth/youtube.force-ssl",
-    ].includes(s)
-  );
+      // Get user tokens from database
+      const userTokens = await UserTokens.findOne({ userId: req.user!.id });
+      const ytToken = userTokens?.youtubeTokens || null;
 
-  if (ytToken && hasYouTubeWriteScope) {
-    return res.json({
-      success: true,
-      token: ytToken,
-    });
-  } else {
-    if (ytToken && !hasYouTubeWriteScope) {
+      console.log("YouTube token found:", !!ytToken);
+
+      if (!ytToken) {
+        return res.json({
+          success: false,
+          message: "YouTube authentication required",
+        });
+      }
+
+      // Check if token is expired
+      if (ytToken.expires_at && new Date() > ytToken.expires_at) {
+        return res.json({
+          success: false,
+          message: "YouTube token expired. Please reconnect.",
+        });
+      }
+
+      // For now, assume the token has the necessary scopes since we request them during auth
+      // We could add scope validation here if needed, but typically OAuth tokens maintain
+      // the scopes they were granted with
+      return res.json({
+        success: true,
+        token: {
+          access_token: ytToken.access_token,
+          refresh_token: ytToken.refresh_token,
+          username: ytToken.username,
+        },
+      });
+    } catch (error) {
+      console.error("Error in YouTube validate:", error);
       return res.json({
         success: false,
-        message:
-          "YouTube permissions are insufficient. Please reconnect and grant playlist permissions.",
+        message: "Internal server error",
       });
     }
-    return res.json({
-      success: false,
-    });
   }
-});
+);
 
 //getMetaData
 youtubeHandler.use("/extract", metaData);

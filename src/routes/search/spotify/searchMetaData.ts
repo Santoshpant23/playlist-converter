@@ -60,42 +60,77 @@ function extractSongInfo(rawTitle: string): {
 } {
   const title = rawTitle.replace(/\s+/g, " ").trim();
 
-  // Clean common video markers
+  // Enhanced cleaning for Indian/Nepali content
   const cleanTitle = title
-    .replace(/\b(official|video|lyric|lyrics|music|mv|hd|4k|hq|audio)\b/gi, "")
+    .replace(
+      /\b(official|video|lyric|lyrics|music|mv|hd|4k|hq|audio|latest|full|version|original|bollywood|hindi|nepali|2019|2020|2021|2022|2023|2024|2025)\b/gi,
+      ""
+    )
+    .replace(/[【】\[\]()（）]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
-  // Try different separators for "Artist - Song" pattern
-  const separators = [" - ", " | ", ": ", " – "];
+  // Enhanced patterns for Indian/Nepali music
+  const patterns = [
+    // Kishore Kumar specific pattern
+    { regex: /^(kishore kumar)\s*[-–—]?\s*(.+)/i, artistFirst: true },
+    // Standard Artist - Song format
+    { regex: /^(.+?)\s*[-–—]\s*(.+)/, artistFirst: true },
+    // Song by Artist format
+    { regex: /^(.+?)\s+by\s+(.+)/i, artistFirst: false },
+    // Song | Artist format
+    { regex: /^(.+?)\s*\|\s*(.+)/, artistFirst: false },
+    // Artist: Song format
+    { regex: /^(.+?):\s*(.+)/, artistFirst: true },
+    // Movie - Song | Artist format (common in Bollywood)
+    { regex: /^(.+?)\s*[-–—]\s*(.+?)\s*\|\s*(.+)/, isThreePart: true },
+  ];
 
-  for (const sep of separators) {
-    const idx = cleanTitle.indexOf(sep);
-    if (idx > 0) {
-      const left = cleanTitle.slice(0, idx).trim();
-      const right = cleanTitle.slice(idx + sep.length).trim();
+  for (const pattern of patterns) {
+    const match = cleanTitle.match(pattern.regex);
+    if (match) {
+      // Handle three-part matches (movie - song | artist)
+      if (pattern.isThreePart && match.length === 4) {
+        return {
+          artist: match[3].trim(),
+          song: match[2].trim(),
+          mainTitle: match[2].trim(),
+        };
+      }
+      // Handle two-part matches
+      else if (match.length === 3) {
+        const first = match[1].trim();
+        const second = match[2].trim();
 
-      // Validate both parts are substantial (at least 2 chars)
-      if (left.length >= 2 && right.length >= 2) {
-        // For "Artist - Song" pattern
-        return { artist: left, song: right, mainTitle: right };
+        // Validate both parts are substantial
+        if (first.length >= 2 && second.length >= 2) {
+          if (pattern.artistFirst) {
+            return { artist: first, song: second, mainTitle: second };
+          } else {
+            return { artist: second, song: first, mainTitle: first };
+          }
+        }
       }
     }
   }
 
   // For complex titles like "Pillu - Official Video | Sanju Rathod | G-SPXRK"
-  // Extract the first part as the main song name
-  const parts = cleanTitle.split(/[\|\-]/);
+  // Extract the first meaningful part as the main song name
+  const parts = cleanTitle
+    .split(/[\|\-]/)
+    .map((p) => p.trim())
+    .filter((p) => p.length >= 2);
   if (parts.length > 1) {
-    const mainPart = parts[0].trim();
-    if (mainPart.length >= 2) {
-      // Try to get artist from second part if available
-      const secondPart = parts[1]?.trim();
-      if (secondPart && secondPart.length >= 2) {
-        return { song: mainPart, artist: secondPart, mainTitle: mainPart };
-      }
-      return { mainTitle: mainPart };
+    const mainPart = parts[0];
+    // Try to get artist from second part if it looks like an artist name
+    const secondPart = parts[1];
+    if (
+      secondPart &&
+      !/official|video|channel|subscribe|like/i.test(secondPart)
+    ) {
+      return { song: mainPart, artist: secondPart, mainTitle: mainPart };
     }
+    return { mainTitle: mainPart };
   }
 
   // If no pattern found, use the cleaned title
@@ -196,91 +231,136 @@ function calculateQueryPriority(query: string): number {
   return score;
 }
 
-// Build optimized search queries - balanced approach for better accuracy
+// Build optimized search queries - more lenient approach for regional music
 function buildSpotifyQueries(video: YouTubeMetadata): string[] {
   const { artist, song, mainTitle } = extractSongInfo(video.title);
   const cleaned = cleanTitle(video.title);
   const queries: string[] = [];
 
-  // Strategy 1: Precise structured search if we have good artist/song extraction
+  // Strategy 1: If we have good artist/song extraction, try structured searches
   if (artist && song && song.length > 2 && artist.length > 2) {
-    // Only use structured search if both are substantial
-    queries.push(`track:"${song}" artist:"${artist}"`);
-    queries.push(`"${song}" "${artist}"`); // Exact phrases
-  }
-
-  // Strategy 2: Natural language searches (most reliable)
-  if (artist && song) {
+    // Natural language first (most reliable)
     queries.push(`${song} ${artist}`);
     queries.push(`${artist} ${song}`);
+    // Then quoted searches
+    queries.push(`"${song}" "${artist}"`);
+    queries.push(`track:"${song}" artist:"${artist}"`);
   }
 
-  // Strategy 3: Handle complex titles with multiple songs (like Bollywood mashups)
+  // Strategy 2: Main title focused searches (critical for single-word songs)
+  if (mainTitle && mainTitle.length > 1) {
+    // Prioritize shorter, cleaner titles
+    if (mainTitle.length <= 15) {
+      queries.push(`"${mainTitle}"`); // Exact match first
+      queries.push(mainTitle); // Then fuzzy
+    } else {
+      queries.push(mainTitle); // Fuzzy first for longer titles
+      queries.push(`"${mainTitle}"`); // Then exact
+    }
+
+    // Regional context searches for non-English content
+    if (
+      /[^\x00-\x7F]/.test(mainTitle) ||
+      /mein|hai|ko|ki|ka|se|aasman|badal|yaad|piya|kya|tera|mera|dil|ishq|pyar|saath|zindagi/i.test(
+        mainTitle
+      )
+    ) {
+      queries.push(`${mainTitle} bollywood`);
+      queries.push(`${mainTitle} hindi`);
+      queries.push(`${mainTitle} indian`);
+    }
+  }
+
+  // Strategy 3: Artist-focused searches
+  if (artist && artist.length > 2) {
+    queries.push(`artist:"${artist}"`);
+    // Add popular artist variations
+    if (/kishore/i.test(artist)) {
+      queries.push(`kishore kumar`);
+      queries.push(`artist:"kishore kumar"`);
+    }
+  }
+
+  // Strategy 4: Handle multiple songs in title (mashups/compilations)
   const multipleSongs = video.title
     .split(/\|\||&&|--|\s+\|\s+/)
     .map((part) =>
       part
         .trim()
         .replace(
-          /\b(official|video|lyric|lyrics|music|mv|hd|4k|hq|audio|latest|song|hindi|english|2019|2020|2021|2022|2023|2024|2025)\b/gi,
+          /\b(official|video|lyric|lyrics|music|mv|hd|4k|hq|audio|latest|song|hindi|english|bollywood|2019|2020|2021|2022|2023|2024|2025|full|version)\b/gi,
           ""
         )
         .trim()
     )
-    .filter((part) => part.length > 4);
+    .filter((part) => part.length > 3 && part.length < 40); // Reasonable length songs
 
-  // Smart prioritization: best queries first
+  // Prioritize shorter, cleaner song titles
   const prioritizedSongs = multipleSongs
     .map((part) => ({
       text: part,
       score: calculateQueryPriority(part),
     }))
-    .sort((a, b) => b.score - a.score) // Higher score = better priority
-    .slice(0, 3); // Top 3 most promising queries
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4); // Top 4 most promising
 
-  // Add prioritized queries (best first)
   for (const { text } of prioritizedSongs) {
-    queries.push(`"${text}"`);
-    queries.push(text);
+    if (text.length <= 10) {
+      queries.push(`"${text}"`); // Exact for short
+    }
+    queries.push(text); // Fuzzy search
   }
 
-  // Strategy 4: Main title only (critical for single-word songs like "Pillu")
+  // Strategy 5: Main title focused searches (critical for single-word songs)
   if (mainTitle && mainTitle.length > 1) {
-    if (mainTitle.length <= 8) {
-      // Short titles get exact search
-      queries.push(`"${mainTitle}"`);
+    if (mainTitle.length <= 15) {
+      queries.push(`"${mainTitle}"`); // Exact match first for short titles
     }
     queries.push(mainTitle);
 
-    // Try with common regional search terms for better matching
+    // Regional context searches for non-English content
     if (
       /[^\x00-\x7F]/.test(mainTitle) ||
-      /mein|hai|ko|ki|ka|se|aasman|badal|yaad|piya|kya|tera|mera/i.test(
+      /mein|hai|ko|ki|ka|se|aasman|badal|yaad|piya|kya|tera|mera|dil|ishq|pyar|saath|zindagi/i.test(
         mainTitle
       )
     ) {
       queries.push(`${mainTitle} bollywood`);
-      queries.push(`${mainTitle} hindi song`);
+      queries.push(`${mainTitle} hindi`);
+      queries.push(`${mainTitle} indian`);
     }
   }
 
-  // Strategy 5: Artist-focused searches if we have artist info
+  // Strategy 6: Artist-focused searches
   if (artist && artist.length > 2) {
     queries.push(`artist:"${artist}"`);
     queries.push(artist);
+
+    // Add popular artist variations
+    if (/kishore/i.test(artist)) {
+      queries.push(`kishore kumar`);
+      queries.push(`artist:"kishore kumar"`);
+    }
   }
 
-  // Strategy 6: Cleaned title (remove extra info but keep essence)
+  // Strategy 7: Cleaned title as fallback
   if (cleaned && cleaned.length > 2 && cleaned !== mainTitle) {
     queries.push(cleaned);
-    queries.push(`"${cleaned}"`);
   }
 
-  // Strategy 7: Raw title as ultimate fallback
-  queries.push(video.title);
+  // Strategy 8: Raw title (cleaned) as last resort
+  const rawCleaned = video.title
+    .replace(/\b(subscribe|like|share|comment|channel)\b/gi, "")
+    .trim();
+  if (rawCleaned.length > 3) {
+    queries.push(rawCleaned);
+  }
 
-  // Remove duplicates and empty queries
-  return [...new Set(queries.filter((q) => q.trim().length > 1))];
+  // Remove duplicates and empty queries, prioritize shorter queries
+  const uniqueQueries = [
+    ...new Set(queries.filter((q) => q.trim().length > 1)),
+  ];
+  return uniqueQueries.sort((a, b) => a.length - b.length); // Shorter queries first
 }
 
 // Advanced scoring for YouTube to Spotify matching
@@ -312,13 +392,20 @@ function calculateSpotifyScore(
   );
 
   // Require minimum title similarity to prevent false matches
-  // More lenient for regional/Bollywood songs
+  // More lenient for regional/Bollywood songs and shorter titles
   const isRegionalSong =
     /[^\x00-\x7F]/.test(videoTitle) ||
-    /bollywood|hindi|punjabi|tamil|telugu|marathi|bengali|gujarati/i.test(
+    /bollywood|hindi|punjabi|tamil|telugu|marathi|bengali|gujarati|nepali|kishore|kumar/i.test(
       videoTitle
     );
-  const minSimilarity = isRegionalSong ? 0.2 : 0.3;
+
+  const isShortTitle = videoInfo.mainTitle && videoInfo.mainTitle.length <= 10;
+
+  // Adjust minimum similarity based on content type
+  let minSimilarity = 0.3; // Default
+  if (isRegionalSong) minSimilarity = 0.15; // Very lenient for regional
+  if (isShortTitle) minSimilarity = 0.1; // Very lenient for short titles
+  if (isRegionalSong && isShortTitle) minSimilarity = 0.05; // Extremely lenient
 
   if (bestTitleSim < minSimilarity) {
     return 0; // Reject if title similarity is too low
@@ -397,19 +484,21 @@ export async function mapYoutubeToSpotify(
   metaData: YouTubeMetadata[],
   accessToken: string
 ): Promise<MappedSong[]> {
-  console.log("🎵 Starting optimized YouTube to Spotify mapping");
+  console.log("🎵 Starting YouTube to Spotify mapping...");
   const results: MappedSong[] = [];
 
   for (let i = 0; i < metaData.length; i++) {
     const video = metaData[i];
-    console.log(`\n[${i + 1}/${metaData.length}] Processing: "${video.title}"`);
+    // Only log every 10 songs to reduce noise
+    if (i % 10 === 0 || i === 0) {
+      console.log(`\n[${i + 1}/${metaData.length}] Processing batch...`);
+    }
 
     try {
       // Check cache first
       const cacheKey = video.title.toLowerCase().replace(/[^\w]/g, "");
 
       if (spotifySearchCache.has(cacheKey)) {
-        console.log("✨ Using cached result");
         const cachedMatch = spotifySearchCache.get(cacheKey) || null;
         results.push({
           youTubeMetadata: video,
@@ -423,7 +512,10 @@ export async function mapYoutubeToSpotify(
       const videoInfo = extractSongInfo(video.title);
       const queries = buildSpotifyQueries(video);
 
-      console.log(`🔍 Trying ${queries.length} queries for "${video.title}"`);
+      // Reduced logging - only for first few or when debugging
+      if (i < 3) {
+        console.log(`🔍 Trying ${queries.length} queries for "${video.title}"`);
+      }
 
       let bestMatch: SpotifyMatch | null = null;
       let bestScore = 0;
@@ -433,7 +525,10 @@ export async function mapYoutubeToSpotify(
         if (!query.trim()) continue;
 
         try {
-          console.log(`   Query: "${query}"`);
+          // Only log queries for debugging first few songs
+          if (i < 3) {
+            console.log(`   Query: "${query}"`);
+          }
           const response = await axios.get(
             "https://api.spotify.com/v1/search",
             {
@@ -441,7 +536,7 @@ export async function mapYoutubeToSpotify(
               params: {
                 q: query,
                 type: "track",
-                limit: 15, // Optimal balance between speed and accuracy
+                limit: 20, // Increased for better coverage, especially for regional music
                 market: "from_token",
               },
               timeout: 10000, // 10 second timeout
@@ -449,14 +544,17 @@ export async function mapYoutubeToSpotify(
           );
 
           const tracks = response.data.tracks.items;
-          console.log(`   Found ${tracks.length} tracks`);
+          // Only log track count for first few songs
+          if (i < 3) {
+            console.log(`   Found ${tracks.length} tracks`);
+          }
 
           // Quick filtering and scoring
           for (const track of tracks) {
             const score = calculateSpotifyScore(video, track, videoInfo);
 
-            if (score > bestScore && score > 0.2) {
-              // Lower threshold for better recall, especially for regional songs
+            if (score > bestScore && score > 0.05) {
+              // Very low threshold for better recall, especially for regional songs
               bestScore = score;
               bestMatch = {
                 title: track.name,
@@ -466,15 +564,22 @@ export async function mapYoutubeToSpotify(
                 spotifyUrl: track.external_urls.spotify,
               };
 
-              console.log(
-                `   🎯 New best: "${track.name}" (${score.toFixed(3)})`
-              );
+              // Only log for first few songs or very good matches
+              if (i < 3 || score > 0.7) {
+                console.log(
+                  `   🎯 New best: "${track.name}" by ${track.artists
+                    .map((a: any) => a.name)
+                    .join(", ")} (${score.toFixed(3)})`
+                );
+              }
             }
           }
 
-          // If we found a very good match, stop searching
-          if (bestScore > 0.7) {
-            console.log(`   ✨ Excellent match found, stopping search`);
+          // If we found a good match, stop searching (lowered threshold for regional music)
+          if (bestScore > 0.5) {
+            if (i < 3) {
+              console.log(`   ✨ Good match found, stopping search`);
+            }
             break;
           }
 
@@ -494,11 +599,14 @@ export async function mapYoutubeToSpotify(
           spotifyMatch: bestMatch,
           found: true,
         });
-        console.log(
-          `✅ Final match: "${bestMatch.title}" by ${
-            bestMatch.artists
-          } (score: ${bestScore.toFixed(3)})`
-        );
+        // Only log successful matches for first few songs
+        if (i < 3) {
+          console.log(
+            `✅ Final match: "${bestMatch.title}" by ${
+              bestMatch.artists
+            } (score: ${bestScore.toFixed(3)})`
+          );
+        }
       } else {
         results.push({
           youTubeMetadata: video,

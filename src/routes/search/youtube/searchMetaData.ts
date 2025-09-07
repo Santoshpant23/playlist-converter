@@ -281,16 +281,15 @@ function calculateSmartScore(
 export async function mapSpotifyToYouTube(
   tracks: TrackMetadata[]
 ): Promise<SongMatch[]> {
-  console.log("🚀 Starting optimized Spotify to YouTube mapping");
+  console.log("🚀 Starting Spotify to YouTube mapping...");
   const results: SongMatch[] = [];
 
   for (let i = 0; i < tracks.length; i++) {
     const track = tracks[i];
-    console.log(
-      `\n[${i + 1}/${tracks.length}] Processing: "${track.title}" by ${
-        track.artists
-      }`
-    );
+    // Only log every 10 songs to reduce noise
+    if (i % 10 === 0 || i === 0) {
+      console.log(`\n[${i + 1}/${tracks.length}] Processing batch...`);
+    }
 
     try {
       // Check cache first
@@ -304,7 +303,6 @@ export async function mapSpotifyToYouTube(
       manageCacheSize();
 
       if (searchCache.has(cacheKey)) {
-        console.log("✨ Using cached result");
         const cachedMatch = searchCache.get(cacheKey) || null;
         results.push({
           spotifyTrack: track,
@@ -321,8 +319,6 @@ export async function mapSpotifyToYouTube(
         .trim();
       const primaryArtist = track.artists.split(",")[0].trim();
 
-      console.log(`🔍 Trying ${queries.length} queries for "${track.title}"`);
-
       let bestMatch: YouTubeMatch | null = null;
       let bestScore = 0;
 
@@ -331,11 +327,8 @@ export async function mapSpotifyToYouTube(
         if (!query.trim()) continue;
 
         try {
-          console.log(`   Query: "${query}"`);
           const searchResults = await ytSearch(query);
           const videos = searchResults.videos.slice(0, 15); // Reasonable number per query
-
-          console.log(`   Found ${videos.length} videos`);
 
           // Process each video
           for (const video of videos) {

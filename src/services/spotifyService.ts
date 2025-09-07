@@ -7,6 +7,15 @@ const client_id = process.env.SPOTIFY_CLIENT_ID;
 const client_secret = process.env.SPOTIFY_CLIENT_SECRET;
 const redirect_uri = process.env.SPOTIFY_REDIRECT_URI;
 
+if (!client_id || !client_secret || !redirect_uri) {
+  console.error(
+    "❌ SPOTIFY AUTH ERROR: Missing required environment variables!"
+  );
+  console.error(
+    "Required: SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REDIRECT_URI"
+  );
+}
+
 export interface SpotifyTokens {
   access_token: string;
   refresh_token: string;
@@ -45,7 +54,7 @@ export function getSpotifyAuthUrl(state: string): string {
   const scope =
     "user-read-private user-read-email playlist-modify-public playlist-modify-private playlist-read-private playlist-read-collaborative";
 
-  return (
+  const authUrl =
     "https://accounts.spotify.com/authorize?" +
     querystring.stringify({
       response_type: "code",
@@ -53,72 +62,81 @@ export function getSpotifyAuthUrl(state: string): string {
       scope,
       redirect_uri,
       state,
-    })
-  );
+    });
+
+  log("Generated Spotify Auth URL:", authUrl);
+  return authUrl;
 }
 
 export async function exchangeCodeForTokens(
   code: string
 ): Promise<SpotifyTokens> {
+  if (!client_id || !client_secret || !redirect_uri) {
+    throw new Error(
+      "Spotify configuration incomplete. Check environment variables."
+    );
+  }
+
   const authString = Buffer.from(`${client_id}:${client_secret}`).toString(
     "base64"
   );
 
-  log(
-    "I am inside function named exchangeCodeForTokens with code ",
-    code,
-    " redirect url ",
-    redirect_uri
-  );
-  log("Auth String is ", authString);
-  const response = await axios.post(
-    "https://accounts.spotify.com/api/token",
-    querystring.stringify({
-      code,
-      redirect_uri,
-      grant_type: "authorization_code",
-    }),
-    {
+  log("=== SPOTIFY TOKEN EXCHANGE DEBUG ===");
+  log("Code:", code ? `${code.substring(0, 10)}...` : "MISSING");
+  log("Redirect URI:", redirect_uri);
+  log("Auth String Length:", authString.length);
+
+  try {
+    const response = await axios.post(
+      "https://accounts.spotify.com/api/token",
+      querystring.stringify({
+        code,
+        redirect_uri,
+        grant_type: "authorization_code",
+      }),
+      {
+        headers: {
+          Authorization: `Basic ${authString}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      }
+    );
+
+    log("✅ Spotify token exchange successful!");
+
+    const { access_token, refresh_token, expires_in } = response.data;
+
+    // Get user profile to verify the token works
+    const userInfo = await axios.get("https://api.spotify.com/v1/me", {
       headers: {
-        Authorization: `Basic ${authString}`,
-        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Bearer ${access_token}`,
       },
+    });
+
+    const username = userInfo.data.display_name || userInfo.data.id;
+    log("✅ User authenticated:", username);
+
+    return {
+      access_token,
+      refresh_token,
+      expires_at: Date.now() + expires_in * 1000,
+      username,
+    };
+  } catch (error: any) {
+    log("❌ Spotify token exchange failed:");
+    log("Error status:", error.response?.status);
+    log("Error data:", error.response?.data);
+
+    if (error.response?.status === 400) {
+      const errorMsg =
+        error.response.data?.error_description ||
+        error.response.data?.error ||
+        "Invalid authorization code";
+      throw new Error(`Spotify Auth Error: ${errorMsg}`);
     }
-  );
 
-  log("Did a response call and below are the data");
-
-  const { access_token, refresh_token, expires_in } = response.data;
-  log(
-    access_token,
-    " -> access token ",
-    refresh_token,
-    " -> refresh token ",
-    expires_in,
-    " -> expires in"
-  );
-  // Get user profile to verify the token works
-  log(
-    "Below I am calling a function that will help me get the username of the person"
-  );
-  const userInfo = await axios.get("https://api.spotify.com/v1/me", {
-    headers: {
-      Authorization: `Bearer ${access_token}`,
-    },
-  });
-
-  log("Function called successfully");
-
-  const username = userInfo.data.display_name || userInfo.data.id;
-
-  log("USername of spotify user is ", username);
-
-  return {
-    access_token,
-    refresh_token,
-    expires_at: Date.now() + expires_in * 1000,
-    username,
-  };
+    throw new Error(`Spotify token exchange failed: ${error.message}`);
+  }
 }
 
 // Utility: Refresh access token using refresh token
@@ -151,7 +169,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<{
 // Utility: Get valid access token from tokens or refresh it
 export async function getValidSpotifyToken(
   tokens: SpotifyTokens
-): Promise<string> {
+): Promise<{ access_token: string; updated_tokens?: SpotifyTokens }> {
   if (!tokens || !tokens.access_token) {
     throw new Error("Spotify not authenticated");
   }
@@ -159,8 +177,20 @@ export async function getValidSpotifyToken(
   if (Date.now() > (tokens.expires_at || 0) - 300000) {
     // token expired or about to expire in 5 mins
     try {
+      console.log("🔄 Spotify token expired, refreshing...");
       const refreshed = await refreshAccessToken(tokens.refresh_token);
-      return refreshed.access_token;
+
+      const updatedTokens: SpotifyTokens = {
+        access_token: refreshed.access_token,
+        refresh_token: refreshed.refresh_token || tokens.refresh_token, // Use new if provided, else keep old
+        expires_at: Date.now() + refreshed.expires_in * 1000,
+        username: tokens.username,
+      };
+
+      return {
+        access_token: refreshed.access_token,
+        updated_tokens: updatedTokens,
+      };
     } catch (error) {
       console.error("Failed to refresh Spotify token:", error);
       throw new Error(
@@ -169,7 +199,7 @@ export async function getValidSpotifyToken(
     }
   }
 
-  return tokens.access_token;
+  return { access_token: tokens.access_token };
 }
 
 // Core playlist extraction functions
@@ -190,7 +220,6 @@ export function extractSpotifyPlaylistId(url: string): string | null {
 }
 
 export function extractTrackMetadata(data: any): SpotifyTrack[] {
-  console.log("Inside extractTrackMetadata function");
   if (!data || !data.tracks || !data.tracks.items) return [];
 
   return data.tracks.items
@@ -232,7 +261,6 @@ export async function fetchSpotifyPlaylist(
 ): Promise<SpotifyPlaylistData> {
   try {
     // Try public access first
-    console.log("Trying to see if this is public playlist");
     const publicResponse = await axios.get(
       `https://api.spotify.com/v1/playlists/${playlistId}`,
       {
@@ -241,18 +269,10 @@ export async function fetchSpotifyPlaylist(
         },
       }
     );
-    //todo improve this function
-    log(
-      "THis is important below, this will help me know what is the information I am getting from spotify api"
-    );
-    log(JSON.stringify(publicResponse.data));
-    // this function is the problem -> TODO: fix it
+
     const metadata = extractTrackMetadata(publicResponse.data);
-    console.log("I think it is public, returning something");
     return { metadata, source: "public" };
   } catch (publicError) {
-    console.log("Public access failed, trying authenticated...");
-
     if (!accessToken) {
       throw new Error("Access token required for private playlist");
     }
@@ -266,7 +286,7 @@ export async function fetchSpotifyPlaylist(
           },
         }
       );
-      console.log("Extracted private playlist hehe");
+
       const metadata = extractTrackMetadata(privateResponse.data);
       return { metadata, source: "private" };
     } catch (authError: any) {
@@ -291,15 +311,15 @@ export async function extractSpotifyPlaylistData(
   }
 
   const playlistId = extractSpotifyPlaylistId(playlistUrl);
-  console.log("This is the id of playlist " + playlistId);
-
   if (!playlistId) {
     throw new Error("Invalid playlist URL");
   }
 
   let accessToken: string | undefined;
   if (tokens) {
-    accessToken = await getValidSpotifyToken(tokens);
+    const tokenResult = await getValidSpotifyToken(tokens);
+    accessToken = tokenResult.access_token;
+    // Note: In this context, we don't update the database since this is just data extraction
   }
 
   return await fetchSpotifyPlaylist(playlistId, accessToken);
